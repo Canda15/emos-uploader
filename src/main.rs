@@ -50,7 +50,7 @@ struct Args {
     #[arg(short = 'c', long = "chunk-size", default_value_t = 30)]
     chunk_size: u64,
 
-    /// 是否在后台运行 (Detach 模式)
+    /// 是否在后台运行 (Detach 模式)，写入日志
     #[arg(short = 'd', long)]
     detach: bool,
 }
@@ -100,46 +100,10 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    // 如果用户传入了 -d，我们要自我克隆一个后台进程
-    if args.detach {
-        let exe = std::env::current_exe()?; // 获取当前程序的绝对路径
-
-        // 收集所有参数，但必须剔除 -d 和 --detach
-        let mut spawn_args: Vec<String> = Vec::new();
-        for arg in std::env::args().skip(1) {
-            if arg != "-d" && arg != "--detach" {
-                spawn_args.push(arg);
-            }
-        }
-
-        // 🌟 优化 1：使用动态且贴切的日志命名 (例如: upload_vl-1234.log)
-        let log_filename = format!("upload_{}.log", args.item);
-
-        // 🌟 优化 2：使用 OpenOptions 开启追加模式 (Append)
-        let log_file = std::fs::OpenOptions::new()
-            .create(true)   // 如果文件不存在则创建
-            .append(true)   // 以追加模式写入，不覆盖原有内容
-            .open(&log_filename)?;
-
-        let child = std::process::Command::new(exe)
-            .args(spawn_args)
-            // 切断后台进程的输入，使得 read_line 不会被卡住
-            .stdin(std::process::Stdio::null())
-            // 将输出重定向到日志文件
-            .stdout(log_file.try_clone()?)
-            .stderr(log_file)
-            .spawn()?;
-
-        println!("🚀 程序已成功转入后台运行！");
-        println!("🆔 后台进程 PID: {}", child.id());
-        println!("📄 运行日志将实时追加到当前目录的 [ {} ] 文件中", log_filename);
-        println!("💡 你可以使用命令查看进度: tail -f {}", log_filename);
-        
-        // 父进程直接退出，终端控制权还给用户
-        return Ok(());
-    }
-
-    // 1. 解析 item 参数 (vl-1234)
+    // ==========================================
+    // 🌟 优化点：将文件和参数的基础校验提前！
+    // 确保如果参数有误，直接在前台报错，而不是转入后台后悄悄死掉
+    // ==========================================
     let parts: Vec<&str> = args.item.split('-').collect();
     if parts.len() != 2 || (parts[0] != "vl" && parts[0] != "ve") {
         anyhow::bail!("--item 参数格式错误，必须为 vl-xxxx 或 ve-xxxx 的形式！");
@@ -151,6 +115,46 @@ async fn main() -> Result<()> {
     if !path.exists() {
         anyhow::bail!("找不到文件: {}", args.file);
     }
+    
+    // ==========================================
+    // 后台 Detach 逻辑 (校验通过后，才允许派生后台进程)
+    // ==========================================
+    if args.detach {
+        let exe = std::env::current_exe()?; // 获取当前程序的绝对路径
+
+        // 收集所有参数，但必须剔除 -d 和 --detach
+        let mut spawn_args: Vec<String> = Vec::new();
+        for arg in std::env::args().skip(1) {
+            if arg != "-d" && arg != "--detach" {
+                spawn_args.push(arg);
+            }
+        }
+
+        let log_filename = format!("upload_{}.log", args.item);
+
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)   
+            .append(true)   
+            .open(&log_filename)?;
+
+        let child = std::process::Command::new(exe)
+            .args(spawn_args)
+            .stdin(std::process::Stdio::null())
+            .stdout(log_file.try_clone()?)
+            .stderr(log_file)
+            .spawn()?;
+
+        println!("🚀 程序已成功转入后台运行！");
+        println!("🆔 后台进程 PID: {}", child.id());
+        println!("📄 运行日志将实时追加到当前目录的[ {} ] 文件中", log_filename);
+        println!("💡 你可以使用命令查看进度: tail -f {}", log_filename);
+        
+        return Ok(());
+    }
+
+    // ==========================================
+    // 校验完毕且成功进入正确环境后，继续提取文件详细信息
+    // ==========================================
     let file_name = path.file_name().unwrap().to_string_lossy();
     let file_size = path.metadata()?.len();
     let mime_type = mime_guess::from_path(path)
