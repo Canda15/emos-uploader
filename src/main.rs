@@ -38,8 +38,8 @@ struct Args {
     #[arg(short, long)]
     item: String,
 
-    /// 并发上传线程数 (默认 4)
-    #[arg(short, long, default_value_t = 4)]
+    /// 并发上传线程数 (默认 1，OneDrive官方推荐单线程)
+    #[arg(short, long, default_value_t = 1)]
     threads: usize,
 
     /// 限制最大上传速度，单位: Mbps (选填)
@@ -220,15 +220,17 @@ async fn main() -> Result<()> {
             } else {
                 let status = res.status();
                 let text = res.text().await.unwrap_or_default();
-                anyhow::bail!("分片上传失败: HTTP {} - {}", status, text)
+                // ⭐ 这里修改了报错信息，精确显示是哪个范围发生了错误
+                anyhow::bail!("分片 {} - {} 上传失败: HTTP {} - {}", chunk.start, chunk.end, status, text)
             }
         }
     });
 
-// 将原先的 collect().await 替换为下面这段循环
+    // ⭐ 替换为快速失败 (Fail-Fast) 机制：
+    // 不再使用 collect().await 傻等，只要 Stream 里吐出任何一个 Error，立刻打断循环，让整个程序报警退出！
     let mut upload_tasks_stream = upload_tasks.buffer_unordered(args.threads);
     while let Some(result) = upload_tasks_stream.next().await {
-        result?; // 只要流里吐出任何一个 Error，立刻打断循环，让整个程序报错退出！
+        result?; 
     }
     
     info!("文件已成功上传至 OneDrive!");
