@@ -46,8 +46,8 @@ struct Args {
     #[arg(short, long)]
     speed: Option<f64>,
 
-    /// 分片大小，单位: MB。OneDrive要求必须是320KB的倍数，程序会自动向下取整对齐。(默认: 30)
-    #[arg(short = 'c', long = "chunk-size", default_value_t = 30)]
+    /// 分片大小，单位: MB。OneDrive要求必须是320KB的倍数，程序会自动向下取整对齐。(默认: 50)
+    #[arg(short = 'c', long = "chunk-size", default_value_t = 50)]
     chunk_size: u64,
 
     /// 是否在后台运行 (Detach 模式)，写入日志
