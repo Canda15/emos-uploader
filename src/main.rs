@@ -4,9 +4,8 @@ use clap::Parser;
 use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::fs::File as StdFile;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::Path;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -117,10 +116,9 @@ async fn main() -> Result<()> {
         format!("Bearer {}", args.auth)
     };
 
-    // 强迫/优先协商 HTTP/2，配置大窗口机制
+    // 构建客户端，使用 rustls，自动协商 HTTP/2
     let client = Client::builder()
         .use_rustls_tls()
-        .http2_adaptive_window(true) 
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36")
         .build()?;
 
@@ -131,7 +129,7 @@ async fn main() -> Result<()> {
     let base_url = format!("https://emos.best/api/upload/video/base?item_type={}&item_id={}", item_type, item_id);
     let base_res = client.get(&base_url).header("Authorization", &auth_header).send().await?;
     if base_res.status().is_success() {
-        let base_info: Value = base_res.json().await?;
+        let base_info = base_res.json::<serde_json::Value>().await?;
         if let Some(title) = base_info.get("title").and_then(|t| t.as_str()) {
             info!("🎯 目标视频信息确认: {}", title);
         }
@@ -148,7 +146,7 @@ async fn main() -> Result<()> {
         file_type: &mime_type,
         file_name: &file_name,
         file_size,
-        file_storage: "default", // 根据最新 API 文档，使用 default
+        file_storage: "default",
     };
 
     let token_res = client
@@ -257,17 +255,16 @@ async fn main() -> Result<()> {
 
         match res {
             Ok(r) if r.status().is_success() => {
-                let body: Value = r.json().await.unwrap_or_default();
-                info!("🎉 恭喜！视频保存成功！\n获得胡萝卜: {}\n分配的媒体 ID: {}", 
-                    body.get("carrot").unwrap_or(&Value::Null), 
-                    body.get("media_id").and_then(|m| m.as_str()).unwrap_or("未知")
-                );
+                let body = r.json::<serde_json::Value>().await.unwrap_or_default();
+                let carrot = body.get("carrot").map(|v| v.to_string()).unwrap_or_else(|| "0".to_string());
+                let media_id = body.get("media_id").and_then(|m| m.as_str()).unwrap_or("未知");
+                
+                info!("🎉 恭喜！视频保存成功！\n获得胡萝卜: {}\n分配的媒体 ID: {}", carrot, media_id);
                 break;
             }
             Ok(r) => {
-                // 如果是 422 错误，通常代表正在合并，获取详细错误信息
                 let status = r.status();
-                let error_info: Value = r.json().await.unwrap_or_default();
+                let error_info = r.json::<serde_json::Value>().await.unwrap_or_default();
                 let message = error_info.get("message").and_then(|m| m.as_str()).unwrap_or("未知错误");
                 error!("保存失败 (HTTP {}): {}", status, message);
             }
@@ -289,7 +286,6 @@ async fn main() -> Result<()> {
 
             if input.trim().eq_ignore_ascii_case("y") {
                 info!("人工确认，开始新一轮重试...");
-                // 若你希望继续允许自动 5 秒等待，这里也可以把 auto_retry 再设回 true
             } else {
                 error!("用户取消保存，程序退出。");
                 break;
