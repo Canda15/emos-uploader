@@ -45,6 +45,10 @@ struct Args {
     /// 限制最大上传速度，单位: Mbps (选填)
     #[arg(short, long)]
     speed: Option<f64>,
+
+    /// 分片大小，单位: MB。OneDrive要求必须是320KB的倍数，程序会自动向下取整对齐。(默认: 30)
+    #[arg(short = 'c', long = "chunk-size", default_value_t = 30)]
+    chunk_size: u64,
 }
 
 #[derive(Serialize)]
@@ -166,7 +170,22 @@ async fn main() -> Result<()> {
     // ==========================================
     // 步骤 2: 多线程并发分片上传至 OneDrive
     // ==========================================
-    let chunk_size: u64 = 209_715_200; // 每块 200MB 
+        // OneDrive 要求分片必须是 320 KB 的倍数 (327,680 字节)
+    let chunk_multiple: u64 = 327_680;
+    
+    // 1. 将用户输入的 MB 转换为 Bytes
+    let requested_bytes = args.chunk_size * 1024 * 1024;
+    
+    // 2. 利用整数除法的特性，自动向下对齐到 320KB 的倍数
+    let mut chunk_size = (requested_bytes / chunk_multiple) * chunk_multiple;
+    
+    // 3. 安全兜底：防止用户输入 0 导致分片大小为 0，最小限制为 320 KB
+    if chunk_size == 0 {
+        chunk_size = chunk_multiple;
+    }
+
+    info!("设定的分片大小为 {} MB，为满足 OneDrive 限制，已自动对齐为 {} Bytes", args.chunk_size, chunk_size);
+    
     let mut chunks = Vec::new();
     let mut start: u64 = 0;
 
