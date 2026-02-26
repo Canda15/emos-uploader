@@ -30,7 +30,7 @@ struct Args {
     #[arg(short, long)]
     file: String,
 
-    /// Authorization Token (例如: 1063_gXKWD9Vk3HLso9LB)
+    /// Authorization Token (例如: 1063_xxxxxxx
     #[arg(short, long)]
     auth: String,
 
@@ -49,6 +49,10 @@ struct Args {
     /// 分片大小，单位: MB。OneDrive要求必须是320KB的倍数，程序会自动向下取整对齐。(默认: 30)
     #[arg(short = 'c', long = "chunk-size", default_value_t = 30)]
     chunk_size: u64,
+
+    /// 是否在后台运行 (Detach 模式)
+    #[arg(short = 'd', long)]
+    detach: bool,
 }
 
 #[derive(Serialize)]
@@ -96,6 +100,45 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
+    // 如果用户传入了 -d，我们要自我克隆一个后台进程
+    if args.detach {
+        let exe = std::env::current_exe()?; // 获取当前程序的绝对路径
+
+        // 收集所有参数，但必须剔除 -d 和 --detach
+        let mut spawn_args: Vec<String> = Vec::new();
+        for arg in std::env::args().skip(1) {
+            if arg != "-d" && arg != "--detach" {
+                spawn_args.push(arg);
+            }
+        }
+
+        // 🌟 优化 1：使用动态且贴切的日志命名 (例如: upload_vl-1234.log)
+        let log_filename = format!("upload_{}.log", args.item);
+
+        // 🌟 优化 2：使用 OpenOptions 开启追加模式 (Append)
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)   // 如果文件不存在则创建
+            .append(true)   // 以追加模式写入，不覆盖原有内容
+            .open(&log_filename)?;
+
+        let child = std::process::Command::new(exe)
+            .args(spawn_args)
+            // 切断后台进程的输入，使得 read_line 不会被卡住
+            .stdin(std::process::Stdio::null())
+            // 将输出重定向到日志文件
+            .stdout(log_file.try_clone()?)
+            .stderr(log_file)
+            .spawn()?;
+
+        println!("🚀 程序已成功转入后台运行！");
+        println!("🆔 后台进程 PID: {}", child.id());
+        println!("📄 运行日志将实时追加到当前目录的 [ {} ] 文件中", log_filename);
+        println!("💡 你可以使用命令查看进度: tail -f {}", log_filename);
+        
+        // 父进程直接退出，终端控制权还给用户
+        return Ok(());
+    }
+
     // 1. 解析 item 参数 (vl-1234)
     let parts: Vec<&str> = args.item.split('-').collect();
     if parts.len() != 2 || (parts[0] != "vl" && parts[0] != "ve") {
@@ -130,15 +173,25 @@ async fn main() -> Result<()> {
     // 步骤 0: 获取基本信息 (展示给用户确认)
     // ==========================================
     info!("正在获取目标资源基本信息...");
-    let base_url = format!("https://emos.best/api/upload/video/base?item_type={}&item_id={}", item_type, item_id);
-    let base_res = client.get(&base_url).header("Authorization", &auth_header).send().await?;
+    let base_url = format!(
+        "https://emos.best/api/upload/video/base?item_type={}&item_id={}",
+        item_type, item_id
+    );
+    let base_res = client
+        .get(&base_url)
+        .header("Authorization", &auth_header)
+        .send()
+        .await?;
     if base_res.status().is_success() {
         let base_info = base_res.json::<serde_json::Value>().await?;
         if let Some(title) = base_info.get("title").and_then(|t| t.as_str()) {
             info!("🎯 目标视频信息确认: {}", title);
         }
     } else {
-        warn!("无法获取基础信息，但仍将尝试上传。HTTP状态码: {}", base_res.status());
+        warn!(
+            "无法获取基础信息，但仍将尝试上传。HTTP状态码: {}",
+            base_res.status()
+        );
     }
 
     // ==========================================
@@ -170,22 +223,25 @@ async fn main() -> Result<()> {
     // ==========================================
     // 步骤 2: 多线程并发分片上传至 OneDrive
     // ==========================================
-        // OneDrive 要求分片必须是 320 KB 的倍数 (327,680 字节)
+    // OneDrive 要求分片必须是 320 KB 的倍数 (327,680 字节)
     let chunk_multiple: u64 = 327_680;
-    
+
     // 1. 将用户输入的 MB 转换为 Bytes
     let requested_bytes = args.chunk_size * 1024 * 1024;
-    
+
     // 2. 利用整数除法的特性，自动向下对齐到 320KB 的倍数
     let mut chunk_size = (requested_bytes / chunk_multiple) * chunk_multiple;
-    
+
     // 3. 安全兜底：防止用户输入 0 导致分片大小为 0，最小限制为 320 KB
     if chunk_size == 0 {
         chunk_size = chunk_multiple;
     }
 
-    info!("设定的分片大小为 {} MB，为满足 OneDrive 限制，已自动对齐为 {} Bytes", args.chunk_size, chunk_size);
-    
+    info!(
+        "设定的分片大小为 {} MB，为满足 OneDrive 限制，已自动对齐为 {} Bytes",
+        args.chunk_size, chunk_size
+    );
+
     let mut chunks = Vec::new();
     let mut start: u64 = 0;
 
@@ -194,7 +250,11 @@ async fn main() -> Result<()> {
         if end >= file_size {
             end = file_size - 1;
         }
-        chunks.push(Chunk { start, end, size: end - start + 1 });
+        chunks.push(Chunk {
+            start,
+            end,
+            size: end - start + 1,
+        });
         start = end + 1;
     }
 
@@ -207,9 +267,16 @@ async fn main() -> Result<()> {
     };
 
     if total_limit_bps > 0.0 {
-        info!("已启用限速: {} Mbps，分配到 {} 个线程", args.speed.unwrap(), args.threads);
+        info!(
+            "已启用限速: {} Mbps，分配到 {} 个线程",
+            args.speed.unwrap(),
+            args.threads
+        );
     }
-    info!("即将上传 {} 个分片，采用 HTTP/2 协议多路复用...", chunks.len());
+    info!(
+        "即将上传 {} 个分片，采用 HTTP/2 协议多路复用...",
+        chunks.len()
+    );
 
     // 构建并发流执行上传
     let upload_tasks = futures::stream::iter(chunks).map(|chunk| {
@@ -218,9 +285,13 @@ async fn main() -> Result<()> {
         let file_path = args.file.clone();
 
         async move {
-            info!("==> 线程开始上传分片: {} - {} / {}", chunk.start, chunk.end, file_size);
+            info!(
+                "==> 线程开始上传分片: {} - {} / {}",
+                chunk.start, chunk.end, file_size
+            );
 
-            let stream = rate_limited_chunk_stream(file_path, chunk.start, chunk.size, thread_limit_bps);
+            let stream =
+                rate_limited_chunk_stream(file_path, chunk.start, chunk.size, thread_limit_bps);
             let body = reqwest::Body::wrap_stream(stream);
             let range_header = format!("bytes {}-{}/{}", chunk.start, chunk.end, file_size);
 
@@ -240,7 +311,13 @@ async fn main() -> Result<()> {
                 let status = res.status();
                 let text = res.text().await.unwrap_or_default();
                 // ⭐ 这里修改了报错信息，精确显示是哪个范围发生了错误
-                anyhow::bail!("分片 {} - {} 上传失败: HTTP {} - {}", chunk.start, chunk.end, status, text)
+                anyhow::bail!(
+                    "分片 {} - {} 上传失败: HTTP {} - {}",
+                    chunk.start,
+                    chunk.end,
+                    status,
+                    text
+                )
             }
         }
     });
@@ -249,9 +326,9 @@ async fn main() -> Result<()> {
     // 不再使用 collect().await 傻等，只要 Stream 里吐出任何一个 Error，立刻打断循环，让整个程序报警退出！
     let mut upload_tasks_stream = upload_tasks.buffer_unordered(args.threads);
     while let Some(result) = upload_tasks_stream.next().await {
-        result?; 
+        result?;
     }
-    
+
     info!("文件已成功上传至 OneDrive!");
 
     // ==========================================
@@ -277,16 +354,28 @@ async fn main() -> Result<()> {
         match res {
             Ok(r) if r.status().is_success() => {
                 let body = r.json::<serde_json::Value>().await.unwrap_or_default();
-                let carrot = body.get("carrot").map(|v| v.to_string()).unwrap_or_else(|| "0".to_string());
-                let media_id = body.get("media_id").and_then(|m| m.as_str()).unwrap_or("未知");
-                
-                info!("🎉 恭喜！视频保存成功！\n获得胡萝卜: {}\n分配的媒体 ID: {}", carrot, media_id);
+                let carrot = body
+                    .get("carrot")
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "0".to_string());
+                let media_id = body
+                    .get("media_id")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("未知");
+
+                info!(
+                    "🎉 恭喜！视频保存成功！\n获得胡萝卜: {}\n分配的媒体 ID: {}",
+                    carrot, media_id
+                );
                 break;
             }
             Ok(r) => {
                 let status = r.status();
                 let error_info = r.json::<serde_json::Value>().await.unwrap_or_default();
-                let message = error_info.get("message").and_then(|m| m.as_str()).unwrap_or("未知错误");
+                let message = error_info
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("未知错误");
                 error!("保存失败 (HTTP {}): {}", status, message);
             }
             Err(e) => {
@@ -300,10 +389,18 @@ async fn main() -> Result<()> {
             auto_retry = false; // 取消后续自动重试
         } else {
             print!("再次保存仍然失败，是否需要再试一次？ (y/n): ");
-            std::io::stdout().flush()?; // 刷新控制台使得提示符立即可见
+            std::io::stdout().flush()?;
 
             let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
+            // 读取用户输入
+            let bytes_read = std::io::stdin().read_line(&mut input)?;
+
+            // 核心修改：如果 bytes_read == 0，说明遇到了 EOF（标准输入被关闭了）。
+            // 后台进程的 stdin 被我们设置为 null，所以瞬间就会走到这里。
+            if bytes_read == 0 {
+                error!("由于程序在后台运行，无法接收人工确认 (y/n)，已自动放弃保存。");
+                break;
+            }
 
             if input.trim().eq_ignore_ascii_case("y") {
                 info!("人工确认，开始新一轮重试...");
