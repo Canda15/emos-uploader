@@ -1,0 +1,21 @@
+[package]
+name = "emos_uploader"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.36", features = ["full"] }
+# 启用 rustls 且自动协商 HTTP/2
+reqwest = { version = "0.12", default-features = false, features =["rustls-tls", "json", "stream"] }
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "local-time"] }
+chrono = "0.4"
+mime_guess = "2.0"
+anyhow = "1.0"
+async-stream = "0.3"
+bytes = "1.5"
+# 引入 futures 处理多线程并发控制
+futures = "0.3"
