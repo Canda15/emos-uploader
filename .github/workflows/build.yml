@@ -1,0 +1,41 @@
+name: Build Debian x86_64
+
+on:
+  push:
+    branches: [ "main", "master" ] # 当推送到 main 或 master 分支时触发
+  workflow_dispatch: # 允许你在 GitHub 网页端手动点击按钮触发编译
+
+jobs:
+  build:
+    name: Build for Debian x86_64 (musl static)
+    runs-on: ubuntu-latest # 使用最新的 Ubuntu runner，与 Debian 同源
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 安装 musl 编译工具链，用于静态编译，确保跨 Debian 版本完美兼容
+      - name: Install musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      # 设置 Rust 环境，并添加 musl 目标
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      # 启用 Rust 缓存，加快后续编译速度
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        
+      # 开始编译，目标指定为 linux-musl
+      - name: Build Project
+        run: cargo build --release --target x86_64-unknown-linux-musl
+
+      # 编译完成后，将生成的二进制文件作为产物上传
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: emos_uploader-debian-x86_64
+          path: target/x86_64-unknown-linux-musl/release/emos_uploader
+          retention-days: 7 # 编译产物在 GitHub 上保留 7 天
