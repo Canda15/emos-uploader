@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use bytes::Bytes;
 use clap::Parser;
 use futures::StreamExt;
@@ -306,7 +306,7 @@ fn rate_limited_chunk_stream(
     start: u64,
     len: u64,
     limit_bps: f64,
-) -> impl futures_core::Stream<Item = std::io::Result<Bytes>> {
+) -> impl futures::stream::Stream<Item = std::io::Result<Bytes>> {
     async_stream::try_stream! {
         // 每个线程独立打开文件，允许并发 Seek 读取
         let mut file = File::from_std(StdFile::open(&file_path)?);
