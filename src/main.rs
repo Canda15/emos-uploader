@@ -225,10 +225,10 @@ async fn main() -> Result<()> {
         }
     });
 
-    // 并发执行所有的 Chunk 任务，使用给定的线程数
-    let results: Vec<Result<()>> = upload_tasks.buffer_unordered(args.threads).collect().await;
-    for r in results {
-        r?; // 只要有任何一个 chunk 彻底失败，就在此处报错中断
+// 将原先的 collect().await 替换为下面这段循环
+    let mut upload_tasks_stream = upload_tasks.buffer_unordered(args.threads);
+    while let Some(result) = upload_tasks_stream.next().await {
+        result?; // 只要流里吐出任何一个 Error，立刻打断循环，让整个程序报错退出！
     }
     
     info!("文件已成功上传至 OneDrive!");
